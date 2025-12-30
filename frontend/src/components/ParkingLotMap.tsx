@@ -57,8 +57,8 @@ export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, high
             };
         };
 
-        // Draw Road Markings (Lane dividers)
-        // The road is strictly on Row 1.
+        // Draw Road Markings (Lane dividers) - Removed per user request
+        /*
         ctx.beginPath();
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2;
@@ -66,32 +66,9 @@ export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, high
 
         const roadNodes = nodes.filter(n => n.type === 'road').sort((a, b) => a.x - b.x);
         if (roadNodes.length > 1) {
-            const first = getNodePos(roadNodes[0]);
-            const last = getNodePos(roadNodes[roadNodes.length - 1]);
-            // Draw line through center of road nodes
-            // Adjust Y slightly if needed, but node center is fine for abstraction
-            ctx.moveTo(first.x, first.y);
-            ctx.lineTo(last.x, last.y);
-            ctx.stroke();
+             // ... logic removed
         }
         ctx.setLineDash([]); // Reset dash
-
-        // Draw Paths (Edges) - Visual guide only, maybe faint
-        /*
-        ctx.strokeStyle = '#444';
-        ctx.lineWidth = 1;
-        edges.forEach(edge => {
-          const sNode = nodes.find(n => n.id === edge.source);
-          const tNode = nodes.find(n => n.id === edge.target);
-          if (sNode && tNode) {
-            const s = getNodePos(sNode);
-            const t = getNodePos(tNode);
-            ctx.beginPath();
-            ctx.moveTo(s.x, s.y);
-            ctx.lineTo(t.x, t.y);
-            ctx.stroke();
-          }
-        });
         */
 
         // Draw Highlighting Path (Active Car Route)

@@ -30,15 +30,15 @@ class ParkingSystem:
         layout_map = [
             "SSSSSSSSSSSSSSSSSSS",
             "RRRRRRRRRRRRRRRRRRR",
-            "SS.R.SSSSSSSSS.R.SS",
-            "SS.R.S.......S.R.SS",
-            "SS.R.S.RRRRR.S.R.SS",
-            "SS.R.S.R...R.S.R.SS",
-            "SS.R.S.R...R.S.R.SS",
-            "SS.R.S.RRRRR.S.R.SS",
-            "SS.R.S.......S.R.SS",
-            "SS.R.SSSSSSSSS.R.SS",
-            "RR.RRRRRRRRRRRRR.RR",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "SRSRSRSRSRSRSRSRSRS",
+            "RRRRRRRRRRRRRRRRRRR",
             "SSSSSSSSSSSSSSSSSSS",
         ]
         
@@ -72,14 +72,6 @@ class ParkingSystem:
                     self.graph.nodes[node_id]['type'] = 'road' 
 
         # 2. Add Edges (Connect neighbors)
-        # We only connect Road-Road and Road-Slot.
-        # Slots do NOT connect to Slots directly (usually).
-        # But for graph simplicity, let's just connect everything relative to the grid
-        # And check strict validity: 
-        # - Road <-> Road
-        # - Road <-> Slot
-        # - Slot <-> Slot (ONLY if we allow driving through slots? No, let's avoid)
-        
         directions = [(-1,0), (1,0), (0,-1), (0,1)]
         
         for u in self.graph.nodes():
@@ -92,18 +84,16 @@ class ParkingSystem:
                     v = self.node_to_idx[(r2, c2)]
                     type2 = self.graph.nodes[v]['type']
                     
-                    # Logic: 
-                    # Drive on Roads.
-                    # Enter/Exit Slot from Road.
-                    # Don't drive Slot to Slot directly unless necessary? 
-                    # Let's allow all connections for now to ensure graph connectivity, 
-                    # but weight Road-Road lower to prefer it?
-                    
                     weight = 1
                     
-                    # Prevent Slot-Slot connections to force using roads?
+                    # Penalize ANY interaction with a slot to ensure we only enter it for final parking
+                    # and never drive through it.
+                    if type1 == 'slot' or type2 == 'slot':
+                        weight = 50
+                    
+                    # Extra penalty for driving linearly between slots (if even possible)
                     if type1 == 'slot' and type2 == 'slot':
-                         continue
+                         weight = 100
 
                     self.graph.add_edge(u, v, weight=weight)
                     
@@ -171,7 +161,7 @@ class ParkingSystem:
         self.vehicle_map[vehicle_id] = slot_id
         
         # Calculate path
-        path_nodes = nx.shortest_path(self.graph, self.entry_node_id, slot_id)
+        path_nodes = nx.shortest_path(self.graph, self.entry_node_id, slot_id, weight='weight')
         
         return {
             "message": f"Allocated slot {slot_id}",
@@ -187,7 +177,7 @@ class ParkingSystem:
         self.slot_status[slot_id] = 0
         
         # Add back to PQ
-        dist = nx.shortest_path_length(self.graph, self.entry_node_id, slot_id)
+        dist = nx.shortest_path_length(self.graph, self.entry_node_id, slot_id, weight='weight')
         heapq.heappush(self.slots, (dist, slot_id))
         
         return {"message": f"Vehicle {vehicle_id} left slot {slot_id}"}
