@@ -16,67 +16,112 @@ app.add_middleware(
 )
 
 class ParkingSystem:
-    def __init__(self, cols=10):
-        self.rows = 3  # Fixed layout: Row 0 (Slots), Row 1 (Road), Row 2 (Slots)
-        self.cols = cols
+    def __init__(self):
         self.graph = nx.Graph()
-        
-        self.slots = [] # Priority Queue (min-heap of available slot indices)
-        self.slot_status = {} # Map slot_idx -> filled (0/1)
-        self.vehicle_map: Dict[str, int] = {} # Vehicle ID -> Slot Index
-        
+        self.slots = [] # Priority Queue
+        self.slot_status = {}
+        self.vehicle_map: Dict[str, int] = {} 
         self.idx_to_node = {}
         self.node_to_idx = {}
         
-        # Build Graph
-        # We need unique IDs for all nodes. 
-        # Let's simple use (r * cols + c) for ID generation, ensuring uniqueness.
+        # Define Grid Layout
+        # S: Slot, R: Road, .: Obstacle/Grass, E: Entry
+        # Trying to replicate the image with L-shape and islands
+        layout_map = [
+            "SSSSSSSSSSSSSSSSSSS",
+            "RRRRRRRRRRRRRRRRRRR",
+            "SS.R.SSSSSSSSS.R.SS",
+            "SS.R.S.......S.R.SS",
+            "SS.R.S.RRRRR.S.R.SS",
+            "SS.R.S.R...R.S.R.SS",
+            "SS.R.S.R...R.S.R.SS",
+            "SS.R.S.RRRRR.S.R.SS",
+            "SS.R.S.......S.R.SS",
+            "SS.R.SSSSSSSSS.R.SS",
+            "RR.RRRRRRRRRRRRR.RR",
+            "SSSSSSSSSSSSSSSSSSS",
+        ]
         
+        self.rows = len(layout_map)
+        self.cols = len(layout_map[0])
+        
+        # Helper to get unique ID
         def get_id(r, c):
-            return r * cols + c
+            return r * self.cols + c
 
         # 1. Create Nodes
-        for c in range(cols):
-            # Top Slot (Row 0)
-            top_id = get_id(0, c)
-            self.graph.add_node(top_id, type="slot", r=0, c=c)
-            self.idx_to_node[top_id] = (0, c)
-            self.node_to_idx[(0, c)] = top_id
-            self.slot_status[top_id] = 0
-            
-            # Road (Row 1)
-            road_id = get_id(1, c)
-            self.graph.add_node(road_id, type="road", r=1, c=c)
-            self.idx_to_node[road_id] = (1, c)
-            self.node_to_idx[(1, c)] = road_id
-            
-            # Bottom Slot (Row 2)
-            bot_id = get_id(2, c)
-            self.graph.add_node(bot_id, type="slot", r=2, c=c)
-            self.idx_to_node[bot_id] = (2, c)
-            self.node_to_idx[(2, c)] = bot_id
-            self.slot_status[bot_id] = 0
+        for r in range(self.rows):
+            for c in range(self.cols):
+                char = layout_map[r][c]
+                if char == '.':
+                    continue # Skip empty space
+                
+                node_id = get_id(r, c)
+                node_type = "slot" if char == 'S' else "road"
+                
+                self.graph.add_node(node_id, type=node_type, r=r, c=c)
+                self.idx_to_node[node_id] = (r, c)
+                self.node_to_idx[(r, c)] = node_id
+                
+                if char == 'S':
+                    self.slot_status[node_id] = 0
+                
+                if char == 'E':
+                    self.entry_node_id = node_id
+                    # Entry is technically a road point too
+                    self.graph.nodes[node_id]['type'] = 'road' 
 
-            # 2. Add Edges
-            # Connect Road segments (Horizontal)
-            if c > 0:
-                prev_road = get_id(1, c-1)
-                self.graph.add_edge(prev_road, road_id, weight=1)
+        # 2. Add Edges (Connect neighbors)
+        # We only connect Road-Road and Road-Slot.
+        # Slots do NOT connect to Slots directly (usually).
+        # But for graph simplicity, let's just connect everything relative to the grid
+        # And check strict validity: 
+        # - Road <-> Road
+        # - Road <-> Slot
+        # - Slot <-> Slot (ONLY if we allow driving through slots? No, let's avoid)
+        
+        directions = [(-1,0), (1,0), (0,-1), (0,1)]
+        
+        for u in self.graph.nodes():
+            r1, c1 = self.graph.nodes[u]['r'], self.graph.nodes[u]['c']
+            type1 = self.graph.nodes[u]['type']
             
-            # Connect Slots to Road (Vertical)
-            self.graph.add_edge(road_id, top_id, weight=1)
-            self.graph.add_edge(road_id, bot_id, weight=1)
+            for dr, dc in directions:
+                r2, c2 = r1 + dr, c1 + dc
+                if (r2, c2) in self.node_to_idx:
+                    v = self.node_to_idx[(r2, c2)]
+                    type2 = self.graph.nodes[v]['type']
+                    
+                    # Logic: 
+                    # Drive on Roads.
+                    # Enter/Exit Slot from Road.
+                    # Don't drive Slot to Slot directly unless necessary? 
+                    # Let's allow all connections for now to ensure graph connectivity, 
+                    # but weight Road-Road lower to prefer it?
+                    
+                    weight = 1
+                    
+                    # Prevent Slot-Slot connections to force using roads?
+                    if type1 == 'slot' and type2 == 'slot':
+                         continue
 
-        self.entry_node_id = get_id(1, 0) # Entry is start of road
-        
-        # Calculate BFS distance from entry to all SLOTS for the PQ
-        lengths = dict(nx.single_source_dijkstra_path_length(self.graph, self.entry_node_id))
-        
-        # Populate Priority Queue with only SLOTS
+                    self.graph.add_edge(u, v, weight=weight)
+                    
+        # Calculate BFS distance for PQ priority
+        if not hasattr(self, 'entry_node_id'):
+             # Fallback if no entry
+            self.entry_node_id = get_id(1, 1)
+
+        try:
+            lengths = dict(nx.single_source_dijkstra_path_length(self.graph, self.entry_node_id))
+        except:
+             # Graph might be disconnected if map is bad, fallback
+            lengths = {n: 999 for n in self.graph.nodes()}
+
+        # Populate Priority Queue
         for node_id, data in self.graph.nodes(data=True):
             if data['type'] == 'slot':
-                dist = lengths[node_id]
-                # Priority: Distance, then ID (to keep order stable)
+                dist = lengths.get(node_id, 9999)
                 heapq.heappush(self.slots, (dist, node_id))
 
     def get_status(self):
