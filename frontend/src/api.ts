@@ -2,6 +2,7 @@ export interface Node {
     id: number;
     x: number;
     y: number;
+    type: 'road' | 'slot';
     filled: boolean;
     vehicle_id: string | null;
     is_entry: boolean;

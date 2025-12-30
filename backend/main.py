@@ -16,51 +16,68 @@ app.add_middleware(
 )
 
 class ParkingSystem:
-    def __init__(self, rows=5, cols=5):
-        self.rows = rows
+    def __init__(self, cols=10):
+        self.rows = 3  # Fixed layout: Row 0 (Slots), Row 1 (Road), Row 2 (Slots)
         self.cols = cols
-        self.graph = nx.grid_2d_graph(rows, cols)
+        self.graph = nx.Graph()
         
-        # We define slots as all nodes for simplicity in this demo, 
-        # but logically we could separate driveways.
-        # Let's say all nodes are slots.
-        # Nodes are tuples (r, c).
-        # We need a linear ID for the priority queue or use the tuple? 
-        # Python's heapq works with tuples (comparison is element-wise).
-        # To strictly follow "array represents whether slot is filled", we map (r,c) to linear index.
-        
-        self.slots = [] # The Priority Queue (stores linear indices)
-        self.slot_status = [0] * (rows * cols) # Array: 0=Empty, 1=Filled
+        self.slots = [] # Priority Queue (min-heap of available slot indices)
+        self.slot_status = {} # Map slot_idx -> filled (0/1)
         self.vehicle_map: Dict[str, int] = {} # Vehicle ID -> Slot Index
         
-        # Initialize PQ with all slots. 
-        # Distance metric: simple Manhattan distance from Entry (0,0) is implicit 
-        # if we prioritize by proximity. 
-        # But a standard Min-Heap on indices 0..N doesn't necessarily mean "nearest".
-        # User requirement: "priority queue to indicate nearest empty parking slot".
-        # So we should store (distance_from_entry, slot_index) in the PQ.
-        
-        self.entry_node = (0, 0)
-        
-        # Precompute distances from entry to all nodes
         self.idx_to_node = {}
         self.node_to_idx = {}
-        count = 0
-        for r in range(rows):
-            for c in range(cols):
-                self.idx_to_node[count] = (r, c)
-                self.node_to_idx[(r, c)] = count
-                count += 1
-                
-        # Calculate BFS distance from entry to all nodes for the PQ
-        lengths = dict(nx.single_source_shortest_path_length(self.graph, self.entry_node))
         
-        for idx in range(count):
-            node = self.idx_to_node[idx]
-            dist = lengths[node]
-            # Push (distance, idx) to heap. 
-            # If distances are equal, smaller idx (ID) is tie-breaker.
-            heapq.heappush(self.slots, (dist, idx))
+        # Build Graph
+        # We need unique IDs for all nodes. 
+        # Let's simple use (r * cols + c) for ID generation, ensuring uniqueness.
+        
+        def get_id(r, c):
+            return r * cols + c
+
+        # 1. Create Nodes
+        for c in range(cols):
+            # Top Slot (Row 0)
+            top_id = get_id(0, c)
+            self.graph.add_node(top_id, type="slot", r=0, c=c)
+            self.idx_to_node[top_id] = (0, c)
+            self.node_to_idx[(0, c)] = top_id
+            self.slot_status[top_id] = 0
+            
+            # Road (Row 1)
+            road_id = get_id(1, c)
+            self.graph.add_node(road_id, type="road", r=1, c=c)
+            self.idx_to_node[road_id] = (1, c)
+            self.node_to_idx[(1, c)] = road_id
+            
+            # Bottom Slot (Row 2)
+            bot_id = get_id(2, c)
+            self.graph.add_node(bot_id, type="slot", r=2, c=c)
+            self.idx_to_node[bot_id] = (2, c)
+            self.node_to_idx[(2, c)] = bot_id
+            self.slot_status[bot_id] = 0
+
+            # 2. Add Edges
+            # Connect Road segments (Horizontal)
+            if c > 0:
+                prev_road = get_id(1, c-1)
+                self.graph.add_edge(prev_road, road_id, weight=1)
+            
+            # Connect Slots to Road (Vertical)
+            self.graph.add_edge(road_id, top_id, weight=1)
+            self.graph.add_edge(road_id, bot_id, weight=1)
+
+        self.entry_node_id = get_id(1, 0) # Entry is start of road
+        
+        # Calculate BFS distance from entry to all SLOTS for the PQ
+        lengths = dict(nx.single_source_dijkstra_path_length(self.graph, self.entry_node_id))
+        
+        # Populate Priority Queue with only SLOTS
+        for node_id, data in self.graph.nodes(data=True):
+            if data['type'] == 'slot':
+                dist = lengths[node_id]
+                # Priority: Distance, then ID (to keep order stable)
+                heapq.heappush(self.slots, (dist, node_id))
 
     def get_status(self):
         """Returns the current state for visualization."""
@@ -69,25 +86,28 @@ class ParkingSystem:
         
         # Serialize graph
         for (u, v) in self.graph.edges():
-            # u, v are (row, col) tuples
-            edges.append({"source": self.node_to_idx[u], "target": self.node_to_idx[v]})
+            edges.append({"source": u, "target": v})
             
-        for idx in range(len(self.slot_status)):
-            r, c = self.idx_to_node[idx]
+        for node_id, data in self.graph.nodes(data=True):
             vehicle_id = None
-            # Find vehicle in this slot
-            for vid, s_idx in self.vehicle_map.items():
-                if s_idx == idx:
-                    vehicle_id = vid
-                    break
+            is_filled = False
+            
+            if data['type'] == 'slot':
+                # Check occupancy
+                for vid, s_idx in self.vehicle_map.items():
+                    if s_idx == node_id:
+                        vehicle_id = vid
+                        break
+                is_filled = bool(self.slot_status.get(node_id, 0))
             
             nodes.append({
-                "id": idx,
-                "x": c, # Visual X (column)
-                "y": r, # Visual Y (row)
-                "filled": bool(self.slot_status[idx]),
+                "id": node_id,
+                "x": data['c'], # Col
+                "y": data['r'], # Row
+                "type": data['type'],
+                "filled": is_filled,
                 "vehicle_id": vehicle_id,
-                "is_entry": (r, c) == self.entry_node
+                "is_entry": (node_id == self.entry_node_id)
             })
             
         return {"nodes": nodes, "edges": edges}
@@ -100,37 +120,32 @@ class ParkingSystem:
             raise HTTPException(status_code=400, detail="Parking Lot Full")
             
         # Pop nearest slot
-        dist, slot_idx = heapq.heappop(self.slots)
+        dist, slot_id = heapq.heappop(self.slots)
         
-        self.slot_status[slot_idx] = 1
-        self.vehicle_map[vehicle_id] = slot_idx
+        self.slot_status[slot_id] = 1
+        self.vehicle_map[vehicle_id] = slot_id
         
         # Calculate path
-        target_node = self.idx_to_node[slot_idx]
-        path_nodes = nx.shortest_path(self.graph, self.entry_node, target_node)
-        path_indices = [self.node_to_idx[n] for n in path_nodes]
+        path_nodes = nx.shortest_path(self.graph, self.entry_node_id, slot_id)
         
         return {
-            "message": f"Allocated slot {slot_idx}",
-            "slot_id": slot_idx,
-            "path": path_indices
+            "message": f"Allocated slot {slot_id}",
+            "slot_id": slot_id,
+            "path": path_nodes
         }
 
     def remove_vehicle(self, vehicle_id: str):
         if vehicle_id not in self.vehicle_map:
             raise HTTPException(status_code=404, detail="Vehicle not found")
         
-        slot_idx = self.vehicle_map.pop(vehicle_id)
-        self.slot_status[slot_idx] = 0
+        slot_id = self.vehicle_map.pop(vehicle_id)
+        self.slot_status[slot_id] = 0
         
         # Add back to PQ
-        # We need to look up distance again
-        node = self.idx_to_node[slot_idx]
-        dist = nx.shortest_path_length(self.graph, self.entry_node, node)
+        dist = nx.shortest_path_length(self.graph, self.entry_node_id, slot_id)
+        heapq.heappush(self.slots, (dist, slot_id))
         
-        heapq.heappush(self.slots, (dist, slot_idx))
-        
-        return {"message": f"Vehicle {vehicle_id} left slot {slot_idx}"}
+        return {"message": f"Vehicle {vehicle_id} left slot {slot_id}"}
 
 # Global Instance
 parking_system = ParkingSystem()
