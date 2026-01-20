@@ -1,14 +1,37 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Node, Edge } from '../api';
 
 interface ParkingLotMapProps {
     nodes: Node[];
     edges: Edge[];
     highlightPath?: number[];
+    fullscreen?: boolean;
 }
 
-export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, highlightPath }) => {
+export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, highlightPath, fullscreen }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [dimensions, setDimensions] = useState({ width: 800, height: 500 });
+
+    // Handle resize
+    useEffect(() => {
+        if (!fullscreen || !containerRef.current) return;
+
+        const updateDimensions = () => {
+            if (containerRef.current) {
+                setDimensions({
+                    width: containerRef.current.clientWidth,
+                    height: containerRef.current.clientHeight
+                });
+            }
+        };
+
+        updateDimensions();
+        const resizeObserver = new ResizeObserver(updateDimensions);
+        resizeObserver.observe(containerRef.current);
+
+        return () => resizeObserver.disconnect();
+    }, [fullscreen]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -26,29 +49,24 @@ export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, high
         ctx.fillRect(0, 0, width, height);
 
         // Grid Scaling
-        // We know layout is 3 rows x N cols (based on backend)
-        // But let's be dynamic based on max x/y found
-        const maxX = Math.max(...nodes.map(n => n.x), 5); // Default to at least 5 cols
-        const maxY = Math.max(...nodes.map(n => n.y), 2); // Default to at least 3 rows (0,1,2)
+        const maxX = Math.max(...nodes.map(n => n.x), 5);
+        const maxY = Math.max(...nodes.map(n => n.y), 2);
 
         const marginX = 60;
         const marginY = 100;
 
-        // Calculate cell size
         const availableWidth = width - 2 * marginX;
         const availableHeight = height - 2 * marginY;
 
-        // We want proportional scaling
         const scaleX = availableWidth / maxX;
         const scaleY = availableHeight / maxY;
 
-        // Slots need to be rectangular. 
-        // Let's say a slot is 50px wide, 80px tall naturally.
-        // We can define a fixed size or scale. Let's use computed scale.
-        // But for a realistic look, slots in Row 0 and Row 2 should "face" the road (Row 1).
+        const slotWidth = scaleX * 0.95;
+        const slotHeight = scaleY * 0.95;
 
-        const slotWidth = scaleX * 0.8;
-        const slotHeight = scaleY * 0.8;
+        // 2-Wheeler slots are smaller but still bigger than before
+        const slotWidth2W = slotWidth * 0.75;
+        const slotHeight2W = slotHeight * 0.85;
 
         const getNodePos = (node: Node) => {
             return {
@@ -57,19 +75,52 @@ export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, high
             };
         };
 
-        // Draw Road Markings (Lane dividers) - Removed per user request
-        /*
-        ctx.beginPath();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([15, 15]); // Dashed line
+        // Draw Zone Labels
+        ctx.font = 'bold 14px sans-serif';
+        ctx.textAlign = 'center';
 
-        const roadNodes = nodes.filter(n => n.type === 'road').sort((a, b) => a.x - b.x);
-        if (roadNodes.length > 1) {
-             // ... logic removed
+        // Find 2W zones and their positions
+        const twoWheelerNodes = nodes.filter(n => n.slot_category === '2w');
+        const fourWheelerNodes = nodes.filter(n => n.slot_category === '4w');
+
+        if (twoWheelerNodes.length > 0) {
+            const midX = marginX + (maxX / 2) * scaleX;
+            ctx.fillStyle = '#4ade80'; // Green
+
+            // Find min and max Y positions for 2W zones
+            const minY2W = Math.min(...twoWheelerNodes.map(n => n.y));
+            const maxY2W = Math.max(...twoWheelerNodes.map(n => n.y));
+
+            // Top 2W zone label
+            if (minY2W === 0) {
+                ctx.fillText('🏍️ 2-WHEELER ZONE', midX, marginY - 30);
+            }
+
+            // Bottom 2W zone label (if different from top)
+            if (maxY2W > 0 && maxY2W === maxY) {
+                ctx.fillText('🏍️ 2-WHEELER ZONE', midX, height - 30);
+            }
         }
-        ctx.setLineDash([]); // Reset dash
-        */
+
+        // Draw 4W zone label on the left side (in the empty space)
+        if (fourWheelerNodes.length > 0) {
+            const avgY4W = fourWheelerNodes.reduce((sum, n) => sum + n.y, 0) / fourWheelerNodes.length;
+            const labelY = marginY + avgY4W * scaleY;
+            const labelX = marginX / 2;  // Position in left margin area
+
+            // Draw vertical label
+            ctx.save();
+            ctx.translate(labelX, labelY);
+            ctx.rotate(-Math.PI / 2);  // Rotate 90 degrees counter-clockwise
+
+            ctx.fillStyle = '#facc15'; // Yellow
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('🚗 4-WHEELER', 0, 0);
+
+            ctx.restore();
+        }
 
         // Draw Highlighting Path (Active Car Route)
         if (highlightPath && highlightPath.length > 1) {
@@ -103,84 +154,116 @@ export const ParkingLotMap: React.FC<ParkingLotMapProps> = ({ nodes, edges, high
             const { x, y } = getNodePos(node);
 
             if (node.type === 'slot') {
+                const is2W = node.slot_category === '2w';
+                const currentSlotWidth = is2W ? slotWidth2W : slotWidth;
+                const currentSlotHeight = is2W ? slotHeight2W : slotHeight;
+
                 // Draw Parking Box
-                // Offset so (x,y) is center
-                const sx = x - slotWidth / 2;
-                const sy = y - slotHeight / 2;
+                const sx = x - currentSlotWidth / 2;
+                const sy = y - currentSlotHeight / 2;
 
                 // Fill
                 if (node.filled) {
-                    ctx.fillStyle = '#ff4d4d'; // Occupied Red
+                    ctx.fillStyle = is2W ? '#22c55e' : '#ff4d4d'; // Green for 2W, Red for 4W
                 } else {
-                    // Empty Slot styling
                     ctx.fillStyle = '#444'; // Asphalt
                 }
 
-                ctx.fillRect(sx, sy, slotWidth, slotHeight);
+                ctx.fillRect(sx, sy, currentSlotWidth, currentSlotHeight);
 
-                // Yellow Borders (Parking Lines)
-                ctx.strokeStyle = '#facc15'; // Yellow-400
+                // Borders (Different colors for 2W vs 4W)
+                ctx.strokeStyle = is2W ? '#4ade80' : '#facc15'; // Green-400 for 2W, Yellow-400 for 4W
                 ctx.lineWidth = 3;
-                ctx.strokeRect(sx, sy, slotWidth, slotHeight);
+                ctx.strokeRect(sx, sy, currentSlotWidth, currentSlotHeight);
 
-                // Label / Car
+                // Label / Vehicle
                 if (node.filled) {
-                    // Draw "Car" shape (simple rectangle for top-down)
-                    ctx.fillStyle = '#fff';
-                    // A smaller rect inside
-                    ctx.fillRect(sx + 5, sy + 10, slotWidth - 10, slotHeight - 20);
-
-                    // Windshield
-                    ctx.fillStyle = '#333';
-                    if (node.y === 0) {
-                        // Top row, car faces down (usually) or up? Let's say faces road (Down)
-                        ctx.fillRect(sx + 7, sy + slotHeight - 25, slotWidth - 14, 8);
+                    if (node.vehicle_type === '2w') {
+                        // Draw motorcycle shape (simple top-down)
+                        ctx.fillStyle = '#fff';
+                        // Body
+                        ctx.fillRect(sx + currentSlotWidth * 0.3, sy + 5, currentSlotWidth * 0.4, currentSlotHeight - 10);
+                        // Wheels
+                        ctx.fillStyle = '#333';
+                        ctx.beginPath();
+                        ctx.arc(sx + currentSlotWidth / 2, sy + 8, 4, 0, Math.PI * 2);
+                        ctx.arc(sx + currentSlotWidth / 2, sy + currentSlotHeight - 8, 4, 0, Math.PI * 2);
+                        ctx.fill();
                     } else {
-                        // Bottom row, car faces road (Up)
-                        ctx.fillRect(sx + 7, sy + 15, slotWidth - 14, 8);
+                        // Draw car shape (top-down)
+                        ctx.fillStyle = '#fff';
+                        ctx.fillRect(sx + 5, sy + 10, currentSlotWidth - 10, currentSlotHeight - 20);
+
+                        // Windshield
+                        ctx.fillStyle = '#333';
+                        if (node.y === 0) {
+                            ctx.fillRect(sx + 7, sy + currentSlotHeight - 25, currentSlotWidth - 14, 8);
+                        } else {
+                            ctx.fillRect(sx + 7, sy + 15, currentSlotWidth - 14, 8);
+                        }
                     }
 
-                    // Text ID
+                    // Text ID - use white text with black outline for visibility
                     if (node.vehicle_id) {
-                        ctx.fillStyle = '#000';
+                        const displayId = node.vehicle_id.split('-').pop() || node.vehicle_id;
                         ctx.font = 'bold 10px sans-serif';
                         ctx.textAlign = 'center';
-                        ctx.fillText(node.vehicle_id.split('-').pop() || '', x, y);
+                        ctx.textBaseline = 'middle';
+
+                        // Draw outline for visibility
+                        ctx.strokeStyle = '#000';
+                        ctx.lineWidth = 2;
+                        ctx.strokeText(displayId, x, y);
+
+                        // Draw white text
+                        ctx.fillStyle = '#fff';
+                        ctx.fillText(displayId, x, y);
                     }
                 } else {
-                    // "FREE" text or ID
-                    ctx.fillStyle = '#aaa';
+                    // Free slot indicator
+                    ctx.fillStyle = is2W ? '#4ade80' : '#aaa';
                     ctx.font = '10px sans-serif';
                     ctx.textAlign = 'center';
                     ctx.textBaseline = 'middle';
-                    // ctx.fillText(`S-${node.id}`, x, y);
-                    ctx.fillText("P", x, y);
+                    ctx.fillText(is2W ? "🏍️" : "P", x, y);
                 }
 
             } else {
                 // Road Node
-                // Debug dot or Entry marker
                 if (node.is_entry) {
                     ctx.fillStyle = '#ffff4d'; // Entry Yellow
                     ctx.beginPath();
-                    ctx.arc(x, y, 6, 0, Math.PI * 2);
+                    ctx.arc(x, y, 8, 0, Math.PI * 2);
                     ctx.fill();
 
                     ctx.fillStyle = '#fff';
                     ctx.font = 'bold 12px sans-serif';
                     ctx.textAlign = 'center';
-                    ctx.fillText("ENTRY", x - 40, y);
+                    ctx.fillText("ENTRY ↓", x, y - 15);
                 }
             }
         });
 
-    }, [nodes, edges, highlightPath]);
+    }, [nodes, edges, highlightPath, dimensions]);
+
+    if (fullscreen) {
+        return (
+            <div ref={containerRef} className="absolute inset-0 bg-gray-800">
+                <canvas
+                    ref={canvasRef}
+                    width={dimensions.width}
+                    height={dimensions.height}
+                    className="bg-[#2a2a2a]"
+                />
+            </div>
+        );
+    }
 
     return (
         <div className="flex justify-center items-center p-4 bg-gray-800 rounded-xl shadow-2xl border border-gray-700">
             <canvas
                 ref={canvasRef}
-                width={800} // Wider for road
+                width={800}
                 height={500}
                 className="bg-[#2a2a2a] rounded-lg shadow-inner"
             />
